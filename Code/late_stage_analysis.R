@@ -113,7 +113,314 @@ ggsave("~/Library/CloudStorage/OneDrive-Nexus365/Documents/GitHub/GitHub_new/car
        p, width = 9, height = 4.6, units = "in", dpi = 300, bg = "white")
 
 
-#### Figure 1 – Firm cessation & provider deregistration rates (main paper)####
+
+
+
+####fig 1: the end of a public service####
+
+library(tidyverse)
+library(patchwork)
+library(scales)
+library(RColorBrewer)
+
+# Load and prepare data
+df <- read.csv("~/Library/CloudStorage/OneDrive-Nexus365/Documents/GitHub/Github_new/adults_social_care_data/activity.csv")
+
+df24 <- read.csv(curl("https://raw.githubusercontent.com/BenGoodair/adults_social_care_data/refs/heads/main/Raw_data/ASC-FR%20CSV%202023-24%20(Descriptions)%20V2.csv"))
+
+df24 <- df24 %>% dplyr::filter(GEOGRAPHY_LEVEL=="Local Authority",
+                               AgeBand=="65 and Over",
+                               DimensionGroup=="Activity")%>%
+  dplyr::mutate(ITEMVALUE = as.numeric(ITEMVALUE))%>%
+  dplyr::select(GEOGRAPHY_CODE, DH_GEOGRAPHY_NAME,ActivityProvision, SupportSetting ,ITEMVALUE)%>%
+  dplyr::group_by(GEOGRAPHY_CODE, DH_GEOGRAPHY_NAME,ActivityProvision, SupportSetting )%>%
+  dplyr::summarise(ITEMVALUE = sum(ITEMVALUE, na.rm=T))%>%
+  dplyr::ungroup()%>%
+  dplyr::group_by(DH_GEOGRAPHY_NAME, GEOGRAPHY_CODE, SupportSetting) %>%
+  dplyr::mutate(percent_sector = ITEMVALUE /ITEMVALUE[ActivityProvision == "99"]*100) %>%
+  dplyr::ungroup()
+
+df25 <- read.csv("~/Library/CloudStorage/OneDrive-Nexus365/Documents/GitHub/Github_new/adults_social_care_data/Raw_data/long-term-support-lts001-asc-activity-2024-to-2025.csv")
+
+
+
+df <- rbind(df, df24[c("percent_sector", "SupportSetting", "DH_GEOGRAPHY_NAME", "ActivityProvision","ITEMVALUE")]%>%
+              dplyr::mutate(year=2024,
+                            X=NA))
+
+df <- df %>%
+  dplyr::mutate(DH_GEOGRAPHY_NAME =  gsub("[0-9]", "", DH_GEOGRAPHY_NAME),
+                DH_GEOGRAPHY_NAME = DH_GEOGRAPHY_NAME %>%
+                  gsub('%20', " ",.)%>%
+                  gsub('&', 'and', .) %>%
+                  gsub('[[:punct:] ]+', ' ', .) %>%
+                  #gsub('[0-9]', '', .)%>%
+                  toupper() %>%
+                  gsub("CITY OF", "",.)%>%
+                  gsub("UA", "",.)%>%
+                  gsub("COUNTY OF", "",.)%>%
+                  gsub("ROYAL BOROUGH OF", "",.)%>%
+                  gsub("LEICESTER CITY", "LEICESTER",.)%>%
+                  gsub("UA", "",.)%>%
+                  gsub("DARWIN", "DARWEN", .)%>%
+                  gsub("AND DARWEN", "WITH DARWEN", .)%>%
+                  gsub("NE SOM", "NORTH EAST SOM", .)%>%
+                  gsub("N E SOM", "NORTH EAST SOM", .)%>%
+                  gsub(" THE", "",.)%>%
+                  gsub("BEDFORD BOROUGH", "BEDFORD",.)%>%
+                  str_trim())
+
+
+# Calculate outsourcing percentage (100 - percent_sector since percent_sector appears to be in-house)
+df <- df %>%
+  dplyr::filter(SupportSetting=="Residential",
+                ActivityProvision=="In House")%>%
+  mutate(outsourcing = 100 - as.numeric(percent_sector)) %>%
+  filter(!is.na(outsourcing))
+
+# Ensure year is numeric
+df$year <- as.numeric(df$year)
+
+# Get year range for annotations
+min_year <- min(df$year, na.rm = TRUE)
+max_year <- max(df$year, na.rm = TRUE)
+
+
+# Create pivot table
+pivot_data <- df %>%
+  dplyr::select(DH_GEOGRAPHY_NAME, year, outsourcing) %>%
+  dplyr::distinct(DH_GEOGRAPHY_NAME,year, .keep_all = T)%>%
+  pivot_wider(names_from = year, values_from = outsourcing)
+
+# Sort LAs by the year they first hit 100% (or never)
+la_order <- pivot_data %>%
+  pivot_longer(-DH_GEOGRAPHY_NAME, names_to = "year", values_to = "outsourcing") %>%
+  mutate(year = as.numeric(year)) %>%
+  filter(outsourcing >= 99.9) %>%
+  group_by(DH_GEOGRAPHY_NAME) %>%
+  summarise(first_100 = min(year, na.rm = TRUE), .groups = "drop") %>%
+  arrange(first_100) %>%
+  pull(DH_GEOGRAPHY_NAME)
+
+# Add LAs that never hit 100%
+never_100 <- setdiff(pivot_data$DH_GEOGRAPHY_NAME, la_order)
+la_order <- c(la_order, never_100)
+
+# Sample LAs if too many (for visibility)
+n_las <- length(la_order)
+if (n_las > 150) {
+  sample_indices <- round(seq(1, n_las, length.out = 150))
+  la_order_display <- la_order[sample_indices]
+} else {
+  la_order_display <- la_order
+}
+
+# Prepare data for heatmap
+heatmap_data <- df %>%
+  filter(DH_GEOGRAPHY_NAME %in% la_order_display) %>%
+  mutate(DH_GEOGRAPHY_NAME = factor(DH_GEOGRAPHY_NAME, levels = la_order_display)) %>%
+  arrange(DH_GEOGRAPHY_NAME, year)
+
+heatmap_data <- heatmap_data %>%
+  dplyr::group_by(DH_GEOGRAPHY_NAME)%>%
+  dplyr::mutate(n = n())%>%
+  dplyr::ungroup()%>%
+  dplyr::filter(n>23)
+
+p1 <- ggplot(heatmap_data, aes(x = year, y = DH_GEOGRAPHY_NAME, fill = outsourcing)) +
+  geom_tile(color = "white", linewidth = 0.1) +
+  scale_fill_gradientn(
+    colors = c("#2c7bb6", "#abd9e9", "#ffffbf", "#fdae61", "#d7191c"),
+    values = scales::rescale(c(0, 25, 50, 75, 100)),
+    limits = c(0, 100),
+    name = "Outsourcing\n(%)",
+    guide = guide_colorbar(barwidth = 1, barheight = 10)
+  ) +
+  labs(
+    title = "A. Local authority trajectories toward outsourcing",
+    subtitle = "Authorities ordered by year of near-complete outsourcing (≥99.9%)",
+    x = "Year",
+    y = NULL
+  ) +
+  scale_y_discrete(breaks = NULL) +
+  scale_x_continuous(expand = c(0, 0), breaks = seq(min_year, max_year, by = 2)) +
+  theme_minimal(base_size = 11) +
+  theme(
+    plot.title = element_text(face = "bold", size = 12),
+    plot.subtitle = element_text(size = 10, color = "grey30"),
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    axis.title = element_text(face = "bold"),
+    legend.position = "right",
+    panel.grid = element_blank(),
+    plot.margin = margin(10, 10, 10, 10)
+  )
+
+
+# Sample years (every 2-3 years for clarity)
+sample_years <- seq(min_year+1, max_year+1, by = 2)
+
+violin_data <- df %>%
+  filter(year %in% sample_years) %>%
+  mutate(year_factor = factor(year))
+
+# Calculate median outsourcing per year for coloring
+year_medians <- violin_data %>%
+  group_by(year) %>%
+  summarise(median_outsourcing = median(outsourcing, na.rm = TRUE), .groups = "drop")
+
+violin_data <- violin_data %>%
+  left_join(year_medians, by = "year")
+
+p2 <- ggplot(violin_data, aes(x = year_factor, y = outsourcing)) +
+  # Reference zones
+  annotate("rect", xmin = -Inf, xmax = Inf, ymin = 0, ymax = 50, 
+           fill = "#2c7bb6", alpha = 0.05) +
+  annotate("rect", xmin = -Inf, xmax = Inf, ymin = 50, ymax = 90, 
+           fill = "#fdae61", alpha = 0.05) +
+  annotate("rect", xmin = -Inf, xmax = Inf, ymin = 90, ymax = 100, 
+           fill = "#d7191c", alpha = 0.05) +
+  geom_hline(yintercept = 100, linetype = "dashed", color = "#d7191c", linewidth = 0.8) +
+  geom_violin(aes(fill = median_outsourcing), 
+              scale = "width", 
+              alpha = 0.7,
+              draw_quantiles = c(0.5)) +
+  scale_fill_gradientn(
+    colors = c("#2c7bb6", "#ffffbf", "#d7191c"),
+    values = scales::rescale(c(0, 50, 100)),
+    limits = c(0, 100),
+    guide = "none"
+  ) +
+  labs(
+    title = "B. Distribution of outsourcing across local authorities",
+    subtitle = "Violin plots showing the shift toward complete outsourcing",
+    x = "Year",
+    y = "Outsourcing (%)"
+  ) +
+  scale_y_continuous(limits = c(-5, 110), breaks = seq(0, 100, 25)) +
+  theme_minimal(base_size = 11) +
+  theme(
+    plot.title = element_text(face = "bold", size = 12),
+    plot.subtitle = element_text(size = 10, color = "grey30"),
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    axis.title = element_text(face = "bold"),
+    panel.grid.major.y = element_line(color = "grey90"),
+    panel.grid.minor = element_blank(),
+    panel.grid.major.x = element_blank(),
+    plot.margin = margin(10, 10, 10, 10)
+  )
+
+# Identify LAs hitting 100% and the year they first did so
+las_at_100 <- df %>%
+  filter(outsourcing >= 99.9) %>%
+  group_by(DH_GEOGRAPHY_NAME) %>%
+  summarise(first_100_year = min(year, na.rm = TRUE), .groups = "drop") %>%
+  ungroup()  # Ensure it's fully ungrouped
+
+# Count by year - use explicit data frame operations
+collapse_counts <- las_at_100 %>%
+  group_by(first_100_year) %>%
+  summarise(n_las = n(), .groups = "drop") %>%
+  complete(first_100_year = full_seq(c(min_year, max_year), 1), 
+           fill = list(n_las = 0)) %>%
+  arrange(first_100_year) %>%
+  mutate(cumulative = cumsum(n_las))
+
+# Create the plot
+p3 <- ggplot(collapse_counts, aes(x = first_100_year)) +
+  # Bar chart
+  geom_col(aes(y = n_las, fill = n_las), 
+           alpha = 0.8, 
+           width = 0.8,
+           color = "grey30",
+           linewidth = 0.3) +
+  scale_fill_gradient(low = "#fdae61", high = "#d7191c", guide = "none") +
+  # Cumulative line
+  geom_line(aes(y = cumulative * max(n_las, na.rm = TRUE) / max(cumulative, na.rm = TRUE)),
+            color = "grey20", 
+            linewidth = 1.2) +
+  geom_point(aes(y = cumulative * max(n_las, na.rm = TRUE) / max(cumulative, na.rm = TRUE)),
+             color = "grey20", 
+             size = 2) +
+  # Secondary axis for cumulative
+  scale_y_continuous(
+    name = "Number of LAs reaching ≥99.9% outsourcing",
+    sec.axis = sec_axis(
+      ~ . * max(collapse_counts$cumulative, na.rm = TRUE) / max(collapse_counts$n_las, na.rm = TRUE),
+      name = "Cumulative total"
+    ),
+    expand = expansion(mult = c(0, 0.1))
+  ) +
+  scale_x_continuous(breaks = seq(min_year, max_year, by = 2)) +
+  labs(
+    title = "C. Temporal clustering of near-complete outsourcing",
+    subtitle = "Annual count and cumulative total of authorities reaching ≥99.9% outsourcing",
+    x = "Year"
+  ) +
+  theme_minimal(base_size = 11) +
+  theme(
+    plot.title = element_text(face = "bold", size = 12),
+    plot.subtitle = element_text(size = 10, color = "grey30"),
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    axis.title = element_text(face = "bold"),
+    axis.title.y.left = element_text(color = "grey20"),
+    axis.title.y.right = element_text(color = "grey20"),
+    axis.text.y.left = element_text(color = "grey20"),
+    axis.text.y.right = element_text(color = "grey20"),
+    panel.grid.major.y = element_line(color = "grey90"),
+    panel.grid.minor = element_blank(),
+    panel.grid.major.x = element_blank(),
+    plot.margin = margin(10, 10, 10, 10)
+  )
+
+# Annotate peak year if exists
+peak_year_data <- collapse_counts %>% 
+  filter(n_las == max(n_las, na.rm = TRUE)) %>% 
+  slice(1)
+
+if (nrow(peak_year_data) > 0 && peak_year_data$n_las > 0) {
+  p3 <- p3 +
+    annotate("text",
+             x = peak_year_data$first_100_year,
+             y = peak_year_data$n_las + max(collapse_counts$n_las, na.rm = TRUE) * 0.05,
+             label = paste0("Peak: ", peak_year_data$n_las, " LAs"),
+             fontface = "bold",
+             color = "#d7191c",
+             size = 3.5)
+}
+
+
+combined_plot <- p1 / (p2 | p3) +
+  plot_annotation(
+    title = "Late-stage outsourcing in English adult social care residential provision",
+    subtitle = paste0("Trajectories of public sector withdrawal, ", min_year, "–", max_year),
+    theme = theme(
+      plot.title = element_text(size = 16, face = "bold", hjust = 0),
+      plot.subtitle = element_text(size = 12, color = "grey30", hjust = 0)
+    )
+  )
+
+# Display
+print(combined_plot)
+
+# Save high-resolution figure
+ggsave("late_stage_outsourcing_figure.png",
+       plot = combined_plot,
+       width = 14,
+       height = 10,
+       dpi = 600,
+       bg = "white")
+
+ggsave("late_stage_outsourcing_figure.pdf",
+       plot = combined_plot,
+       width = 14,
+       height = 10,
+       device = cairo_pdf,
+       bg = "white")
+
+
+
+
+#### Figure 2 – Firm cessation & provider deregistration rates (main paper)####
 
 library(tidyverse)
 library(lubridate)
@@ -442,7 +749,7 @@ ggsave(
 
 
 
-#### Figure 2: Chain vs individual firm composition, openings, closures (2011-2025)####
+#### Figure 3: Chain vs individual firm composition, openings, closures (2011-2025)####
 
 library(tidyverse)
 library(lubridate)
@@ -740,7 +1047,7 @@ p_e <- ggplot(pred_closure, aes(x = predicted, y = x, color = x)) +
 
 
 
-#### Figure 3 Officer characteristics (2000-2018)####
+#### Figure 4 Officer characteristics (2000-2018)####
   
   
   library(tidyverse)
@@ -1175,7 +1482,7 @@ ggsave(
 
 
 
-####ANALYSIS 4####
+####ANALYSIS 5: commissioner spend####
 
 comm <- read.csv("Library/CloudStorage/OneDrive-Nexus365/Documents/GitHub/Github_new/adults_social_care_data/Final_data/commissioning_spend.csv")
 
